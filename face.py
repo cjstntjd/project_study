@@ -1,111 +1,71 @@
-import cv2, dlib, sys
+import dlib, cv2
 import numpy as np
 
-scaler = 0.3
-
-
 detector = dlib.get_frontal_face_detector()
-predictor = dlib.shape_predictor('shape_predictor_68_face_landmarks.dat')
+sp = dlib.shape_predictor('shape_predictor_68_face_landmarks.dat')
+facerec = dlib.face_recognition_model_v1('dlib_face_recognition_resnet_model_v1.dat')
 
+descs = np.load('img/descs.npy')[()]
 
-cap = cv2.VideoCapture('girl2.mp4')
+def encode_face(img):
+  dets = detector(img, 1)
 
+  if len(dets) == 0:
+    return np.empty(0)
 
-overlay = cv2.imread('ryan_transparent.png', cv2.IMREAD_UNCHANGED)
+  for k, d in enumerate(dets):
+    shape = sp(img, d)
+    face_descriptor = facerec.compute_face_descriptor(img, shape)
 
+    return np.array(face_descriptor)
 
-def overlay_transparent(background_img, img_to_overlay_t, x, y, overlay_size=None):
-  bg_img = background_img.copy()
-  # convert 3 channels to 4 channels
-  if bg_img.shape[2] == 3:
-    bg_img = cv2.cvtColor(bg_img, cv2.COLOR_BGR2BGRA)
+video_path = 'img/video.mp4'
+cap = cv2.VideoCapture(video_path)
 
-  if overlay_size is not None:
-    img_to_overlay_t = cv2.resize(img_to_overlay_t.copy(), overlay_size)
+if not cap.isOpened():
+  exit()
 
-  b, g, r, a = cv2.split(img_to_overlay_t)
+_, img_bgr = cap.read() # (800, 1920, 3)
+padding_size = 0
+resized_width = 600
+video_size = (resized_width, int(img_bgr.shape[0] * resized_width // img_bgr.shape[1]))
+output_size = (resized_width, int(img_bgr.shape[0] * resized_width // img_bgr.shape[1] + padding_size * 2))
 
-  mask = cv2.medianBlur(a, 5)
+fourcc = cv2.VideoWriter_fourcc('m', 'p', '4', 'v')
+writer = cv2.VideoWriter('%s_output.mp4' % (video_path.split('.')[0]), fourcc, cap.get(cv2.CAP_PROP_FPS), output_size)
 
-  h, w, _ = img_to_overlay_t.shape
-  roi = bg_img[int(y-h/2):int(y+h/2), int(x-w/2):int(x+w/2)]
-
-  img1_bg = cv2.bitwise_and(roi.copy(), roi.copy(), mask=cv2.bitwise_not(mask))
-  img2_fg = cv2.bitwise_and(img_to_overlay_t, img_to_overlay_t, mask=mask)
-
-  bg_img[int(y-h/2):int(y+h/2), int(x-w/2):int(x+w/2)] = cv2.add(img1_bg, img2_fg)
-
- 
-  bg_img = cv2.cvtColor(bg_img, cv2.COLOR_BGRA2BGR)
-
-  return bg_img
-
-face_roi = []
-face_sizes = []
-result = 0
-# loop
 while True:
-  
-  ret, img = cap.read()
+  ret, img_bgr = cap.read()
   if not ret:
     break
 
+  img_bgr = cv2.resize(img_bgr, video_size)
+  img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+
+  # img_bgr = cv2.copyMakeBorder(img_bgr, top=padding_size, bottom=padding_size, left=0, right=0, borderType=cv2.BORDER_CONSTANT, value=(0,0,0))
   
-  img = cv2.resize(img, (int(img.shape[1] * scaler), int(img.shape[0] * scaler)))
-  ori = img.copy()
+  dets = detector(img_bgr, 1)
 
-  
-  if len(face_roi) == 0:
-    faces = detector(img, 1)
-  else:
-    roi_img = img[face_roi[0]:face_roi[1], face_roi[2]:face_roi[3]]
-    # cv2.imshow('roi', roi_img)
-    faces = detector(roi_img)
+  for k, d in enumerate(dets):
+    shape = sp(img_rgb, d)
+    face_descriptor = facerec.compute_face_descriptor(img_rgb, shape)
 
- 
-  if len(faces) == 0:
-    print('no faces!')
+    last_found = {'name': 'unknown', 'dist': 0.6, 'color': (0,0,255)}
 
-  
-  for face in faces:
-    if len(face_roi) == 0:
-      dlib_shape = predictor(img, face)
-      shape_2d = np.array([[p.x, p.y] for p in dlib_shape.parts()])
-    else:
-      dlib_shape = predictor(roi_img, face)
-      shape_2d = np.array([[p.x + face_roi[2], p.y + face_roi[0]] for p in dlib_shape.parts()])
+    for name, saved_desc in descs.items():
+      dist = np.linalg.norm([face_descriptor] - saved_desc, axis=1)
 
-    for s in shape_2d:
-      cv2.circle(img, center=tuple(s), radius=1, color=(255, 255, 255), thickness=2, lineType=cv2.LINE_AA)
+      if dist < last_found['dist']:
+        last_found = {'name': name, 'dist': dist, 'color': (255,255,255)}
 
-    
-    center_x, center_y = np.mean(shape_2d, axis=0).astype(np.int)
+    cv2.rectangle(img_bgr, pt1=(d.left(), d.top()), pt2=(d.right(), d.bottom()), color=last_found['color'], thickness=2)
+    cv2.putText(img_bgr, last_found['name'], org=(d.left(), d.top()), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1, color=last_found['color'], thickness=2)
 
-    
-    min_coords = np.min(shape_2d, axis=0)
-    max_coords = np.max(shape_2d, axis=0)
+  writer.write(img_bgr)
 
-   
-    cv2.circle(img, center=tuple(min_coords), radius=1, color=(255, 0, 0), thickness=2, lineType=cv2.LINE_AA)
-    cv2.circle(img, center=tuple(max_coords), radius=1, color=(255, 0, 0), thickness=2, lineType=cv2.LINE_AA)
-
-    
-    face_size = max(max_coords - min_coords)
-    face_sizes.append(face_size)
-    if len(face_sizes) > 10:
-      del face_sizes[0]
-    mean_face_size = int(np.mean(face_sizes) * 1.8)
-
-    
-    face_roi = np.array([int(min_coords[1] - face_size / 2), int(max_coords[1] + face_size / 2), int(min_coords[0] - face_size / 2), int(max_coords[0] + face_size / 2)])
-    face_roi = np.clip(face_roi, 0, 10000)
-
-    
-    result = overlay_transparent(ori, overlay, center_x + 8, center_y - 25, overlay_size=(mean_face_size, mean_face_size))
-
- 
-  cv2.imshow('original', ori)
-  cv2.imshow('facial landmarks', img)
-  cv2.imshow('result', result)
+  cv2.imshow('img', img_bgr)
   if cv2.waitKey(1) == ord('q'):
-    sys.exit(1)
+    break
+
+cap.release()
+writer.release()
